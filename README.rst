@@ -374,3 +374,89 @@ To mark a migration as deferred means to ignore a migration when running ``migra
     20151217170514_add_id_to_   deferred     None
     20151218145832_add_karen_   False               
     20160107200351_blah         False               
+
+Super_user 
+----------
+
+Note  the template for migrations mentions a second cursor context manager available for running steps as a
+database superuser, be default `postgres`. This is useful if you want to use a less priviliged user for most
+DB interactions, but occasionally need a db_superuser, to do something like create a function in an untrusted
+language.
+
+
+For example, with best practice would be to use two migrations:
+
+``migrations/20170905134614_create_py_update_sha1.py``::
+
+    def up(cursor):
+        with super_user() as super_cursor:
+            super_cursor.execute("""
+            CREATE OR REPLACE FUNCTION update_sha1()
+            RETURNS TRIGGER
+            AS $$
+            import hashlib
+
+            TD['new']['sha1'] = hashlib.new('sha1', TD['new']['file']).hexdigest()
+            return 'MODIFY'
+            $$ LANGUAGE plpythonu;
+              """)
+
+
+    def down(cursor):
+        with super_user() as super_cursor:
+            super_cursor.execute("""DROP FUNCTION update_sha1()""")
+
+and
+
+``migrations/20170905134722_create_update_sha1_trigger.py``::
+
+    def up(cursor):
+        cursor.execute("""CREATE TRIGGER files_update_sha1
+        BEFORE INSERT OR UPDATE OF file ON files
+        FOR EACH ROW EXECUTE PROCEDURE update_sha1()
+        """)
+
+
+    def down(cursor):
+        cursor.execute("""DROP TRIGGER files_update_sha1 ON files""")
+
+By seperating into two migrations, the function created by the super_user connection is
+available to the less priviliged user to create the trigger on the table owned by them.
+
+If you wish to combine these into a single migration, it is necessary to call `commit`
+on the connection of any cursor that needs to have its results visible to another cursor
+in the same migration function:
+
+``migrations/20170905134722_create_update_sha1_trigger.py``::
+
+    def up(cursor):
+        with super_user() as super_cursor:
+            super_cursor.execute("""
+            CREATE OR REPLACE FUNCTION update_sha1()
+            RETURNS TRIGGER
+            AS $$
+            import hashlib
+
+            TD['new']['sha1'] = hashlib.new('sha1', TD['new']['file']).hexdigest()
+            return 'MODIFY'
+            $$ LANGUAGE plpythonu;
+              """)
+
+        super_cursor.connection.commit()
+
+        # Would error with "no such function"
+        cursor.execute("""CREATE TRIGGER files_update_sha1
+        BEFORE INSERT OR UPDATE OF file ON files
+        FOR EACH ROW EXECUTE PROCEDURE update_sha1()
+        """)
+
+
+    def down(cursor):
+        cursor.execute("""DROP TRIGGER files_update_sha1 ON files""")
+
+        cursor.connection.commit()
+
+        # Would error w/ "cannot drop other object depend on it"
+        with super_user() as super_cursor:
+            super_cursor.execute("""DROP FUNCTION update_sha1()""")
+
