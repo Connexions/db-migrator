@@ -24,11 +24,17 @@ def cli_command(cursor, migrations_directory='', db_connection_string='',
     migrations = utils.get_migrations(migrations_directory,
                                       import_modules=True)
 
+    name_width = 15
+
     if wide:
         migrations = list(migrations)
-        name_width = max([len(name) for _, name, _ in migrations])
-    else:
-        name_width = 15
+        try:
+            name_width = max([len(name) for _, name, _ in migrations])
+        except ValueError:
+            if migrations == []:
+                pass
+            else:
+                raise
 
     name_format = '{:<%s}' % (name_width,)
     print('version        | {} | is applied | date applied'
